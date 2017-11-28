@@ -689,6 +689,41 @@
         exit 1
     fi
 
+    # pcapng file log
+    AC_ARG_ENABLE(pcapng, AS_HELP_STRING([--enable-pcapng], [Enable pcapng]),,[enable_pcapng=no])
+    AS_IF([test "x$enable_pcapng" = "xyes"], [
+        CFLAGS="$CFLAGS -DHAVE_LIBPCAPNG"
+        #GLIB
+        GLIB_MIN_VERSION=2.16.0
+        AC_SUBST(GLIB_MIN_VERSION)
+
+        GLIB_PREFIX="`$PKG_CONFIG --variable=prefix glib-2.0`"
+        AC_SUBST(GLIB_PREFIX)
+
+        # Try pkg-config first:
+        PKG_CHECK_MODULES([libglib], glib,, [with_pkgconfig_glib=no])
+        if test "$with_pkgconfig_glib" != "no"; then
+            CPPFLAGS="${CPPFLAGS} ${libglib_CFLAGS}"
+            LIBS="${LIBS} ${libglib_LIBS}"
+        fi
+
+        use_glib_cflags="true"
+
+        if test "$use_glib_cflags" = "true"; then
+            # Use GLIB_CFLAGS
+            AM_PATH_GLIB_2_0($GLIB_MIN_VERSION,
+            [
+                CFLAGS="$CFLAGS $GLIB_CFLAGS"
+                CXXFLAGS="$CXXFLAGS $GLIB_CFLAGS"
+                LIBS="$GLIB_LIBS $LIBS"
+
+            ], AC_MSG_ERROR(GLib $GLIB_MIN_VERSION or later distribution not found.), gthread gmodule)
+        else
+            # Don't use GLIB_CFLAGS
+            AM_PATH_GLIB_2_0($GLIB_MIN_VERSION, , AC_MSG_ERROR(GLib $GLIB_MIN_VERSION or later distribution not found.), gthread gmodule)
+        fi
+    ])
+
   # libpthread
     AC_ARG_WITH(libpthread_includes,
             [  --with-libpthread-includes=DIR  libpthread include directory],
@@ -2217,6 +2252,8 @@ SURICATA_BUILD_CONF="Suricata Configuration:
 
   Profiling enabled:                       ${enable_profiling}
   Profiling locks enabled:                 ${enable_profiling_locks}
+
+  Pcapng support:                          ${enable_pcapng}
 
 Development settings:
   Coccinelle / spatch:                     ${enable_coccinelle}

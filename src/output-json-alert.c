@@ -90,6 +90,8 @@
 #define LOG_JSON_FLOW              BIT_U16(11)
 #define LOG_JSON_HTTP_BODY         BIT_U16(12)
 #define LOG_JSON_HTTP_BODY_BASE64  BIT_U16(13)
+#define LOG_JSON_MAC               BIT_U16(14)
+#define LOG_JSON_DIRECTION         BIT_U16(15)
 
 #define LOG_JSON_METADATA_ALL  (LOG_JSON_APP_LAYER|LOG_JSON_HTTP|LOG_JSON_TLS|LOG_JSON_SSH|LOG_JSON_SMTP|LOG_JSON_DNP3|LOG_JSON_VARS|LOG_JSON_FLOW)
 
@@ -365,6 +367,22 @@ static int AlertJson(ThreadVars *tv, JsonAlertLogThread *aft, const Packet *p)
 
         /* alert */
         AlertJsonHeader(p, pa, js);
+
+        if (p->flow && (json_output_ctx->flags & LOG_JSON_DIRECTION)) {
+            json_t *alert = json_object_get(js, "alert");
+            if (alert != NULL) {
+                (FlowGetPacketDirection(p->flow, p) == TOSERVER) ?
+                    json_object_set_new(alert, "direction", json_string("to_server")) :
+                    json_object_set_new(alert, "direction", json_string("to_client"));
+            }
+        }
+
+        if (p->flow && (json_output_ctx->flags & LOG_JSON_MAC)) {
+            json_t *alert = json_object_get(js, "alert");
+            if (alert != NULL) {
+                JsonAddMac(alert, (const Flow*)p->flow, 0);
+            }
+        }
 
         if (IS_TUNNEL_PKT(p)) {
             AlertJsonTunnel(p, js);
@@ -781,6 +799,8 @@ static void XffSetup(AlertJsonOutputCtx *json_output_ctx, ConfNode *conf)
         SetFlag(conf, "metadata", LOG_JSON_METADATA_ALL, &json_output_ctx->flags);
         SetFlag(conf, "flow", LOG_JSON_FLOW, &json_output_ctx->flags);
         SetFlag(conf, "vars", LOG_JSON_VARS, &json_output_ctx->flags);
+        SetFlag(conf, "direction", LOG_JSON_DIRECTION, &json_output_ctx->flags);
+        SetFlag(conf, "mac", LOG_JSON_MAC, &json_output_ctx->flags);
 
         SetFlag(conf, "http", LOG_JSON_HTTP, &json_output_ctx->flags);
         SetFlag(conf, "tls",  LOG_JSON_TLS,  &json_output_ctx->flags);

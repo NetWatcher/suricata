@@ -48,6 +48,7 @@
 #include "output-json-flow.h"
 
 #include "stream-tcp-private.h"
+#include "util-validate.h"
 
 #ifdef HAVE_LIBJANSSON
 
@@ -68,6 +69,7 @@ typedef struct JsonFlowLogThread_ {
 #define LOG_HTTP_DEFAULT 0
 #define LOG_HTTP_EXTENDED 1
 #define LOG_HTTP_CUSTOM 2
+#define LOG_FLOW_MAC 3
 
 static json_t *CreateJSONHeaderFromFlow(Flow *f, const char *event_type)
 {
@@ -232,6 +234,10 @@ static void JsonFlowLogJSON(JsonFlowLogThread *aft, json_t *js, Flow *f)
     int32_t age = f->lastts.tv_sec - f->startts.tv_sec;
     json_object_set_new(hjs, "age",
             json_integer(age));
+
+    if (aft->flowlog_ctx->flags & LOG_FLOW_MAC) {
+        JsonAddMac(hjs, (const Flow*)f, 0);
+    }
 
     if (f->flow_end_flags & FLOW_END_FLAG_EMERGENCY)
         json_object_set_new(hjs, "emergency", json_true());
@@ -425,6 +431,19 @@ static void OutputFlowLogDeinitSub(OutputCtx *output_ctx)
     SCFree(output_ctx);
 }
 
+static void SetFlag(const ConfNode *conf, const char *name, uint32_t flag, uint32_t *out_flags)
+{
+    DEBUG_VALIDATE_BUG_ON(conf == NULL);
+    const char *setting = ConfNodeLookupChildValue(conf, name);
+    if (setting != NULL) {
+        if (ConfValIsTrue(setting)) {
+            *out_flags |= flag;
+        } else {
+            *out_flags &= ~flag;
+        }
+    }
+}
+
 static OutputCtx *OutputFlowLogInitSub(ConfNode *conf, OutputCtx *parent_ctx)
 {
     OutputJsonCtx *ojc = parent_ctx->data;
@@ -441,6 +460,10 @@ static OutputCtx *OutputFlowLogInitSub(ConfNode *conf, OutputCtx *parent_ctx)
 
     flow_ctx->file_ctx = ojc->file_ctx;
     flow_ctx->flags = LOG_HTTP_DEFAULT;
+
+    if (conf != NULL) {
+        SetFlag(conf, "mac", LOG_FLOW_MAC, &flow_ctx->flags);
+    }
 
     output_ctx->data = flow_ctx;
     output_ctx->DeInit = OutputFlowLogDeinitSub;

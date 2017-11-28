@@ -441,6 +441,16 @@ typedef struct Flow_
     uint32_t tosrcpktcnt;
     uint64_t todstbytecnt;
     uint64_t tosrcbytecnt;
+
+#ifdef HAVE_LIBPCAPNG
+    /** Filename for pcapng dumped flow */
+    char *pcapng_file;
+#endif //HAVE_LIBPCAPNG
+
+    /** Src/dst mac adress for the flow */
+    uint8_t dst_mac[6];
+    uint8_t src_mac[6];
+
 } Flow;
 
 enum FlowState {
