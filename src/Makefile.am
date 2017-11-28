@@ -314,6 +314,7 @@ output-tx.c output-tx.h \
 output-json.c output-json.h \
 packet-queue.c packet-queue.h \
 pkt-var.c pkt-var.h \
+pcapng.c pcapng.h \
 reputation.c reputation.h \
 respond-reject.c respond-reject.h \
 respond-reject-libnet11.h respond-reject-libnet11.c \

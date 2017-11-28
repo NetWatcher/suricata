@@ -734,4 +734,36 @@ static void OutputJsonDeInitCtx(OutputCtx *output_ctx)
     SCFree(output_ctx);
 }
 
+void JsonAddMac(json_t *js, const Flow *f, int swap_src)
+{
+    if(f == NULL)
+        return;
+
+    static const int max_mac_sz = 6;
+    char src_mac[max_mac_sz*2+5+1], dst_mac[max_mac_sz*2+5+1];
+
+    memset(src_mac,'\0',max_mac_sz*2+5+1);
+    memset(dst_mac,'\0',max_mac_sz*2+5+1);
+
+    int i = 0;
+    static const char* lut = "0123456789ABCDEF";
+
+    for (i = 0; i < max_mac_sz; i++) {
+
+        src_mac[i*3] = lut[f->src_mac[i] >> 4];
+        src_mac[i*3+1] = lut[f->src_mac[i] & 15];
+        src_mac[i*3+2] = ':';
+
+        dst_mac[i*3] = lut[f->dst_mac[i] >> 4];
+        dst_mac[i*3+1] = lut[f->dst_mac[i] & 15];
+        dst_mac[i*3+2] = ':';
+    }
+    src_mac[max_mac_sz*2+5] = '\0';
+    dst_mac[max_mac_sz*2+5] = '\0';
+
+    json_object_set_new(js, "src_mac", swap_src ? json_string(dst_mac) : json_string(src_mac));
+    json_object_set_new(js, "dest_mac", swap_src ? json_string(src_mac) : json_string(dst_mac));
+
+}
+
 #endif

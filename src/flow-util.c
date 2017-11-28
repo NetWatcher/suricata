@@ -177,6 +177,11 @@ void FlowInit(Flow *f, const Packet *p)
 
     f->protomap = FlowGetProtoMapping(f->proto);
 
+    if (p->ethh) {
+        memcpy(f->dst_mac, p->ethh->eth_dst, sizeof(p->ethh->eth_dst));
+        memcpy(f->src_mac, p->ethh->eth_src, sizeof(p->ethh->eth_src));
+    }
+
     SCReturn;
 }
 

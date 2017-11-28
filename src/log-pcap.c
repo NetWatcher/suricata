@@ -60,6 +60,14 @@
 
 #include "queue.h"
 
+#ifdef HAVE_LIBPCAPNG
+#include "pcapng.h"
+
+#define _GNU_SOURCE
+#include <string.h>
+#include <libgen.h>
+#endif // HAVE_LIBPCAPNG
+
 #define DEFAULT_LOG_FILENAME            "pcaplog"
 #define MODULE_NAME                     "PcapLog"
 #define MIN_LIMIT                       1 * 1024 * 1024
@@ -149,6 +157,10 @@ typedef struct PcapLogData_ {
     int threads;                /**< number of threads (only set in the global) */
     char *filename_parts[MAX_TOKS];
     int filename_part_cnt;
+
+#ifdef HAVE_LIBPCAPNG
+    wtap_dumper  *pdh;
+#endif
 } PcapLogData;
 
 typedef struct PcapLogThreadData_ {
@@ -211,7 +223,16 @@ static int PcapLogCloseFile(ThreadVars *t, PcapLogData *pl)
 {
     if (pl != NULL) {
         PCAPLOG_PROFILE_START;
-
+#ifdef HAVE_LIBPCAPNG
+        int err = 0;
+        if(pl->pdh != NULL) {
+            wtap_dump_close(pl->pdh, &err);
+        }
+        pl->pcap_dead_handle = NULL;
+        pl->size_current = 0;
+        pl->pcap_dumper = NULL;
+        pl->pdh= NULL;
+#else // HAVE_LIBPCAPNG
         if (pl->pcap_dumper != NULL)
             pcap_dump_close(pl->pcap_dumper);
         pl->size_current = 0;
@@ -220,7 +241,7 @@ static int PcapLogCloseFile(ThreadVars *t, PcapLogData *pl)
         if (pl->pcap_dead_handle != NULL)
             pcap_close(pl->pcap_dead_handle);
         pl->pcap_dead_handle = NULL;
-
+#endif // HAVE_LIBPCAPNG
         PCAPLOG_PROFILE_END(pl->profile_close);
     }
 
@@ -317,6 +338,56 @@ static int PcapLogOpenHandles(PcapLogData *pl, const Packet *p)
 
     SCLogDebug("Setting pcap-log link type to %u", p->datalink);
 
+#ifdef HAVE_LIBPCAPNG
+    int           err;
+    wtap_dumper  *pdh           = NULL;
+    wtapng_iface_descriptions_t *idb_inf;
+    wtapng_section_t            *shb_hdr;
+    wtapng_if_descr_t descr;
+
+    descr.wtap_encap = WTAP_ENCAP_UNKNOWN;
+    descr.time_units_per_second = 1000000; /* default microsecond resolution */
+    descr.link_type = 1; /* wtap_wtap_encap_to_pcap_encap(wth->file_encap); */
+    descr.snap_len = 0;
+    descr.opt_comment = "opt_comment";
+    descr.if_name = NULL;
+    descr.if_description = NULL;
+    descr.if_speed = 0;
+    descr.if_tsresol = 6;
+    descr.if_filter_str= NULL;
+    descr.bpf_filter_len= 0;
+    descr.if_filter_bpf_bytes= NULL;
+    descr.if_os = NULL;
+    descr.if_fcslen = -1;
+    descr.num_stat_entries = 0;          /* Number of ISB:s */
+    descr.interface_statistics = NULL;
+
+    //Section Header Block
+    shb_hdr = g_new(wtapng_section_t,1);
+    shb_hdr->section_length = 0;
+    /* options */
+    shb_hdr->opt_comment   = NULL;
+    shb_hdr->shb_hardware  = NULL;
+    shb_hdr->shb_os        = "LinuxOS";
+    shb_hdr->shb_user_appl = "SuricataApp";
+
+    idb_inf = g_new(wtapng_iface_descriptions_t,1);
+    idb_inf->interface_data = g_array_new(FALSE, FALSE, sizeof(wtapng_if_descr_t));
+    g_array_append_val(idb_inf->interface_data, descr);
+
+    pdh = wtap_dump_open_ng(pl->filename, shb_hdr, idb_inf, &err);
+
+    if (pdh == NULL) {
+        PCAPLOG_PROFILE_END(pl->profile_handles);
+        g_free(idb_inf);
+        return TM_ECODE_FAILED;
+    }
+    pl->pdh = pdh;
+    pdh->addrinfo_lists = NULL;
+    g_free(idb_inf);
+
+#else // HAVE_LIBPCAPNG
+
     if (pl->pcap_dead_handle == NULL) {
         if ((pl->pcap_dead_handle = pcap_open_dead(p->datalink,
                         PCAP_SNAPLEN)) == NULL) {
@@ -332,6 +403,8 @@ static int PcapLogOpenHandles(PcapLogData *pl, const Packet *p)
             return TM_ECODE_FAILED;
         }
     }
+
+#endif // HAVE_LIBPCAPNG
 
     PCAPLOG_PROFILE_END(pl->profile_handles);
     return TM_ECODE_OK;
@@ -363,6 +436,64 @@ static void PcapLogUnlock(PcapLogData *pl)
     }
 }
 
+#ifdef HAVE_LIBPCAPNG
+static int pcapng_dump(PcapLogData *pl, char *comment, const Packet *p)
+{
+    int retval = 0;
+    g_return_val_if_fail(pl, 1);
+    g_return_val_if_fail(p, 1);
+    int	err;
+    struct wtap_pkthdr    phdr;
+    phdr.ts.nsecs = pl->h->ts.tv_usec;
+    phdr.ts.secs = pl->h->ts.tv_sec;
+    phdr.len = pl->h->caplen;
+    phdr.caplen = pl->h->caplen;
+
+    phdr.rec_type = REC_TYPE_PACKET;
+    phdr.interface_id = 0;
+    phdr.presence_flags = WTAP_HAS_TS|WTAP_HAS_CAP_LEN|WTAP_HAS_INTERFACE_ID;
+    phdr.pack_flags = 0;
+    phdr.opt_comment = comment;
+
+    if(!phdr.opt_comment) {
+        SCLogError(SC_ERR_MEM_ALLOC, "phdr.opt_comment is NULL");
+        retval = 1;
+        goto Exit;
+    }
+    phdr.pkt_encap = p->datalink; //get_encapsulation_type(GET_PKT_DATA(p));
+
+    if (!wtap_dump(pl->pdh, &phdr, GET_PKT_DATA(p), &err, 1/*FLUSH_TO_DISK*/)) {
+        switch (err) {
+            case WTAP_ERR_UNSUPPORTED_ENCAP:
+                /*
+                * This is a problem with the particular frame we're
+                * writing and the file type and subtype we're
+                * writing; note that, and report the frame number
+                * and file type/subtype.
+                */
+                SCLogDebug("Packet has a network type that can't be saved in a %s", pl->filename);
+            break;
+
+            case WTAP_ERR_PACKET_TOO_LARGE:
+                /*
+                * This is a problem with the particular frame we're
+                * writing and the file type and subtype we're
+                * writing; note that, and report the frame number
+                * and file type/subtype.
+                */
+                SCLogDebug("Packet is too large for a \"%s\" file\n.", pl->filename);
+            break;
+
+            default:
+                SCLogDebug("Error writing to %s", pl->filename);
+        }
+    }
+
+Exit:
+    return retval;
+}
+#endif // HAVE_LIBPCAPNG
+
 /**
  * \brief Pcap logging main function
  *
@@ -377,6 +508,10 @@ static void PcapLogUnlock(PcapLogData *pl)
  */
 static int PcapLog (ThreadVars *t, void *thread_data, const Packet *p)
 {
+    if(NULL == p->flow) {
+        return TM_ECODE_OK;
+    }
+
     size_t len;
     int rotate = 0;
     int ret = 0;
@@ -428,17 +563,40 @@ static int PcapLog (ThreadVars *t, void *thread_data, const Packet *p)
         }
     }
 
+#ifdef HAVE_LIBPCAPNG
+    /* 64bits value + flow start ts: 147ae147ae4c27f|1508325614.123456 */
+    char flow_id_str[64] = {0};
+    sprintf(flow_id_str, "%lx|%ld.%06ld", FlowGetId(p->flow), p->flow->startts.tv_sec, p->flow->startts.tv_usec);
+    SCLogDebug("PCAP log file %s ,flow_id %s, thread_id %ld",  pl->filename, flow_id_str, SCGetThreadIdLong());
+#endif
+
     /* XXX pcap handles, nfq, pfring, can only have one link type ipfw? we do
      * this here as we don't know the link type until we get our first packet */
+#ifdef HAVE_LIBPCAPNG
+    if (pl->pdh == NULL) {
+        if (PcapLogOpenHandles(pl, p) != TM_ECODE_OK) {
+            PcapLogUnlock(pl);
+            return TM_ECODE_FAILED;
+        }
+    }
+#else // HAVE_LIBPCAPNG
     if (pl->pcap_dead_handle == NULL || pl->pcap_dumper == NULL) {
         if (PcapLogOpenHandles(pl, p) != TM_ECODE_OK) {
             PcapLogUnlock(pl);
             return TM_ECODE_FAILED;
         }
     }
+#endif // HAVE_LIBPCAPNG
 
     PCAPLOG_PROFILE_START;
+
+#ifdef HAVE_LIBPCAPNG
+    pl->pdh->bytes_dumped = 0;
+    pcapng_dump(pl, flow_id_str, p);
+#else // HAVE_LIBPCAPNG
     pcap_dump((u_char *)pl->pcap_dumper, pl->h, GET_PKT_DATA(p));
+#endif // HAVE_LIBPCAPNG
+
     pl->size_current += len;
     PCAPLOG_PROFILE_END(pl->profile_write);
     pl->profile_data_size += len;
